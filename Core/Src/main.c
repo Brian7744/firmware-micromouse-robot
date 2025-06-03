@@ -50,7 +50,6 @@ volatile uint8_t counter;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -149,6 +148,10 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 
 	HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+	if(HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)){
+		HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+	}
+
 
 }
 /* USER CODE END 4 */
