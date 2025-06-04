@@ -28,7 +28,12 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum{
+    BUTTON_UP,
+    BUTTON_FALLING,
+    BUTTON_DOWN,
+    BUTTON_RISING
+} _eButtonState;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -45,11 +50,13 @@
 
 /* USER CODE BEGIN PV */
 extern TIM_HandleTypeDef htim1;
-volatile uint8_t counter;
+uint8_t button_pressed_flag = 0;
+_eButtonState button_state = BUTTON_UP;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void button_update();
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -91,7 +98,7 @@ int main(void)
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim1);
-  counter = 0;
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -145,13 +152,58 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+void button_update(){
+
+    switch(button_state)
+    {
+        case BUTTON_UP:
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                button_state = BUTTON_FALLING;
+            }
+            break;
+
+        case BUTTON_FALLING:
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                button_state = BUTTON_DOWN;
+                button_pressed_flag++;
+            } else {
+                button_state = BUTTON_UP;
+            }
+            break;
+
+        case BUTTON_DOWN:
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                button_state = BUTTON_RISING;
+            }
+            break;
+
+        case BUTTON_RISING:
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                button_state = BUTTON_UP;
+                //button_pressed_flag=0;
+            } else {
+                button_state = BUTTON_DOWN;
+            }
+            break;
+
+        default:
+            button_state = BUTTON_UP;
+            break;
+    }
+
+    if(button_pressed_flag==2){
+    	button_pressed_flag=0;
+    }
+}
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 
 	HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	if(HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)){
+	button_update();
+	if(button_pressed_flag){
 		HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+	}else{
+		HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, 0);
 	}
-
 
 }
 /* USER CODE END 4 */
