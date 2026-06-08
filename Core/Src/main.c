@@ -19,8 +19,10 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
-
+#include <stdio.h>
+#include <string.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -38,7 +40,7 @@ typedef enum{
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TimeDelay	1000
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,16 +51,27 @@ typedef enum{
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* handler declaration*/
 extern TIM_HandleTypeDef htim1;
+extern UART_HandleTypeDef huart1;
+
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
+
+char msg[32];
+
+uint8_t flagSec = 0;
+
+/*Variable de prueba*/
+uint32_t valores = 10;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void button_update();
 /* USER CODE BEGIN PFP */
-
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
+void button_update();
+void trans_por_uart1();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -96,9 +109,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim1);
-
+  //HAL_USART_Init(&huart1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -195,12 +209,26 @@ void button_update(){
     	button_pressed_flag=0;
     }
 }
+
+void trans_por_uart1(){
+
+	flagSec++;
+	if(flagSec>=9){
+
+		sprintf(msg,"enviado por usart1. %lu\r\n", valores);
+		HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+		flagSec=0;
+	}
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 
 	HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 	button_update();
 	if(button_pressed_flag){
 		HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+		trans_por_uart1();
 	}else{
 		HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, 0);
 	}
