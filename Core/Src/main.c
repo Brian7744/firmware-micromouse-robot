@@ -58,9 +58,12 @@ extern UART_HandleTypeDef huart1;
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
 
-char msg[22];
+char msg[32];
 
 uint8_t flagSec = 0;
+
+/*Variable de prueba*/
+uint32_t valores = 10;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -212,7 +215,7 @@ void trans_por_uart1(){
 	flagSec++;
 	if(flagSec>=9){
 
-		sprintf(msg,"enviado por usart1\r\n");
+		sprintf(msg,"enviado por usart1. %lu\r\n", valores);
 		HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
 
 		flagSec=0;
