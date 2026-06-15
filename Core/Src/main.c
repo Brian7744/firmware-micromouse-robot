@@ -64,6 +64,11 @@ uint8_t flagSec = 0;
 
 /*Variable de prueba*/
 uint32_t valores = 10;
+
+/*Variables para el USB*/
+uint8_t  BufUSBRx[256];
+uint8_t  nByteTx = 0;
+uint8_t  flagUSBRx = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -72,6 +77,7 @@ void SystemClock_Config(void);
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
 void button_update();
 void trans_por_uart1();
+void USBRXX(uint8_t *Buf, uint32_t Len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -123,8 +129,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	CDC_Transmit_FS(texto, sizeof(texto)-1);
-	HAL_Delay(1000);
+	    if(flagUSBRx){
+	        if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
+	            flagUSBRx = 0;   // limpia solo si se envió bien
+	        }
+	    }
+
   }
   /* USER CODE END 3 */
 }
@@ -243,6 +253,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 		HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, 0);
 	}
 
+}
+
+void USBRXX(uint8_t *Buf, uint32_t Len){
+
+    BufUSBRx[0] = 'U';
+    BufUSBRx[1] = 'S';
+    BufUSBRx[2] = 'B';
+    BufUSBRx[3] = ' ';
+
+    for(uint32_t i=0; i<Len; i++){
+        BufUSBRx[i+4] = Buf[i];
+    }
+
+    nByteTx   = Len + 4;
+    flagUSBRx = 1;          // avisa al while(1) que hay dato
 }
 /* USER CODE END 4 */
 
