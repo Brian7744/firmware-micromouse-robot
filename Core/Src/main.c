@@ -18,6 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
+#include "i2c.h"
 #include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -26,6 +28,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
+#include <stdio.h>
+#include <string.h>
+#include "sh1106.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,6 +59,7 @@ typedef enum{
 /* handler declaration*/
 extern TIM_HandleTypeDef htim1;
 extern UART_HandleTypeDef huart1;
+extern I2C_HandleTypeDef hi2c1;
 
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
@@ -75,6 +81,7 @@ uint8_t  flagUSBRx = 0;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c);
 void button_update();
 void trans_por_uart1();
 void USBRXX(uint8_t *Buf, uint32_t Len);
@@ -114,11 +121,26 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  // Necesario para el control de los motores
+  __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
+  __HAL_AFIO_REMAP_SWJ_NOJTAG();    // Libera PB3, PB4 y PB15 apagando el JTAG
+
+
   HAL_TIM_Base_Start_IT(&htim1);
+
+  // === INICIO OLED ===
+  if (OLED_Init(&hi2c1) == 0) {
+      OLED_Clear();
+      OLED_DrawString(10, 10, "DISPLAY OK!", 1);
+      OLED_DrawString(10, 30, "Modo: FASE 2", 1);
+      OLED_Update(); // Dispara el envío por DMA
+  }
   //HAL_USART_Init(&huart1);
   /* USER CODE END 2 */
 
@@ -244,15 +266,21 @@ void trans_por_uart1(){
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 
-	HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	button_update();
-	if(button_pressed_flag){
-		HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
-		trans_por_uart1();
-	}else{
-		HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, 0);
-	}
+	if(htim1->Instance == TIM1){
+	        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+	        button_update();
+	        if(button_pressed_flag){
+	            HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+	            trans_por_uart1();
+	        }else{
+	            HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
+	        }
+	    }
+}
 
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
+    // Esta función la llama el hardware automáticamente cuando el DMA termina
+    OLED_DMA_TxCpltCallback(hi2c);
 }
 
 void USBRXX(uint8_t *Buf, uint32_t Len){
