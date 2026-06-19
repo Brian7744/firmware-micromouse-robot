@@ -1,0 +1,8 @@
+../Core/Src/motor.c:22:16:clamp	3
+../Core/Src/motor.c:30:13:Motor1_Set	3
+../Core/Src/motor.c:61:13:Motor2_Set	3
+../Core/Src/motor.c:89:6:Motor_Init	1
+../Core/Src/motor.c:116:6:Motor_SetSpeed	2
+../Core/Src/motor.c:124:6:Motor_Stop	1
+../Core/Src/motor.c:129:6:Motor_BrakeAll	1
+../Core/Src/motor.c:143:9:Motor_GetSpeed	1

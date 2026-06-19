@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sh1106.h"
+#include "motor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -84,6 +85,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c);
 void button_update();
 void trans_por_uart1();
+void Test_BothMotors(void);
 void USBRXX(uint8_t *Buf, uint32_t Len);
 /* USER CODE END PFP */
 
@@ -126,6 +128,8 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
   MX_I2C1_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   // Necesario para el control de los motores
   __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
@@ -134,13 +138,16 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim1);
 
+  Motor_Init(&htim3, &htim2);
   // === INICIO OLED ===
-  if (OLED_Init(&hi2c1) == 0) {
-      OLED_Clear();
-      OLED_DrawString(10, 10, "DISPLAY OK!", 1);
-      OLED_DrawString(10, 30, "Modo: FASE 2", 1);
-      OLED_Update(); // Dispara el envío por DMA
-  }
+  //if (OLED_Init(&hi2c1) == 0) {
+  //    OLED_Clear();
+  //    OLED_DrawString(10, 10, "DISPLAY OK!", 1);
+  //    OLED_DrawString(10, 30, "Modo: FASE 2", 1);
+  //    OLED_Update(); // Dispara el envío por DMA
+  //}
+
+  Test_BothMotors();
   //HAL_USART_Init(&huart1);
   /* USER CODE END 2 */
 
@@ -281,6 +288,49 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
     // Esta función la llama el hardware automáticamente cuando el DMA termina
     OLED_DMA_TxCpltCallback(hi2c);
+}
+
+void Test_BothMotors(void){
+    // Inicializa los drivers usando los timers de tu main
+    Motor_Init(&htim3, &htim2);
+
+    int16_t speed = 5000;  // 50% de la velocidad máxima (9999)
+
+    while (1) {
+        // Adelante
+        Motor_SetSpeed(MOTOR_LEFT, speed);
+        Motor_SetSpeed(MOTOR_RIGHT, speed);
+        HAL_Delay(2000);
+
+        // Frenar
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Reversa
+        //Motor_SetSpeed(MOTOR_LEFT, -speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, -speed);
+        //HAL_Delay(2000);
+
+        // Frenar
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Giro derecha (izq adelante, der reversa)
+        //Motor_SetSpeed(MOTOR_LEFT, speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, -speed);
+        //HAL_Delay(1500);
+
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Giro izquierda
+        //Motor_SetSpeed(MOTOR_LEFT, -speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, speed);
+        //HAL_Delay(1500);
+
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+    }
 }
 
 void USBRXX(uint8_t *Buf, uint32_t Len){
