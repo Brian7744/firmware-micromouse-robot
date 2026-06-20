@@ -90,6 +90,8 @@ void Test_BothMotors(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 void Test_Ultrasonic(void);
 void USBRXX(uint8_t *Buf, uint32_t Len);
+void Servo_SetAngle(uint8_t angle);
+void Test_Servo(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -138,8 +140,9 @@ int main(void)
   __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
   __HAL_AFIO_REMAP_SWJ_NOJTAG();    // Libera PB3, PB4 y PB15 apagando el JTAG
 
-
+  // === INICIO TIM1 (Botón + Servo) ===
   HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // Enciende la señal PWM en PA8
 
   Motor_Init(&htim3, &htim2);
   // === INICIO OLED ===
@@ -152,8 +155,8 @@ int main(void)
   OLED_Init(&hi2c1);
   //Test_BothMotors();
   //HAL_USART_Init(&huart1);
-  Test_Ultrasonic();
-
+  //Test_Ultrasonic();
+  Test_Servo();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -278,16 +281,28 @@ void trans_por_uart1(){
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
 
+	// Esta variable no pierde su valor entre interrupciones
+	static uint8_t divisor_100ms = 0;
+
 	if(htim1->Instance == TIM1){
-	        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	        button_update();
-	        if(button_pressed_flag){
-	            HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
-	            trans_por_uart1();
-	        }else{
-	            HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
-	        }
-	    }
+		// 1. El botón se actualiza cada 20ms
+		button_update();
+
+		// 2. Escalador: Solo entramos acá 1 de cada 5 veces
+		divisor_100ms++;
+		if(divisor_100ms >= 5){
+			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+			if(button_pressed_flag){
+				HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+			    trans_por_uart1(); // Sigue transmitiendo al mismo ritmo de antes
+			} else {
+			    HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
+			}
+			divisor_100ms = 0; // Reiniciamos el contador
+		}
+
+	}
+
 }
 
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
@@ -343,6 +358,38 @@ void Test_Ultrasonic(void)
         OLED_Update();
 
         HAL_Delay(440); // Completa el medio segundo antes de medir de nuevo
+    }
+}
+
+
+/**
+  * @brief  Mueve el servo a un ángulo específico (0 a 180 grados)
+  * @param  angle: Grados deseados
+  */
+void Servo_SetAngle(uint8_t angle){
+    if(angle > 180) angle = 180;
+
+    // Mapeo lineal: 0° -> 0.5ms (500 cuentas) | 180° -> 2.5ms (2500 cuentas)
+    uint32_t compare_value = 500 + ((angle * 2000) / 180);
+
+    // Cargamos el registro del TIM1 Canal 1 (Pin PA8)
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, compare_value);
+}
+
+void Test_Servo(void){
+    while(1)
+    {
+        Servo_SetAngle(0);
+        HAL_Delay(1000);
+
+        Servo_SetAngle(90);
+        HAL_Delay(1000);
+
+        Servo_SetAngle(180);
+        HAL_Delay(1000);
+
+        Servo_SetAngle(90);
+        HAL_Delay(1000);
     }
 }
 
