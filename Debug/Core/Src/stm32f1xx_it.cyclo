@@ -12,3 +12,4 @@
 ../Core/Src/stm32f1xx_it.c:235:6:TIM1_UP_IRQHandler	1
 ../Core/Src/stm32f1xx_it.c:249:6:I2C1_EV_IRQHandler	1
 ../Core/Src/stm32f1xx_it.c:263:6:I2C1_ER_IRQHandler	1
+../Core/Src/stm32f1xx_it.c:277:6:EXTI15_10_IRQHandler	1

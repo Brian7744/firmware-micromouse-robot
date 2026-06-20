@@ -66,6 +66,9 @@ extern I2C_HandleTypeDef hi2c1;
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
 
+/*Variable para debuggear el ultrasonico*/
+volatile uint32_t eco_interrupciones = 0;
+
 char msg[32];
 uint8_t texto[] = "Mensaje STM32\r\n";
 uint8_t flagSec = 0;
@@ -155,8 +158,8 @@ int main(void)
   OLED_Init(&hi2c1);
   //Test_BothMotors();
   //HAL_USART_Init(&huart1);
-  //Test_Ultrasonic();
-  Test_Servo();
+  Test_Ultrasonic();
+  //Test_Servo();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -313,51 +316,58 @@ void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
     // Si la interrupción viene del pin 13 (Echo del sensor)
     if(GPIO_Pin == GPIO_PIN_13){
-        US_EXTI_Callback();
+    	eco_interrupciones++;
+    	US_EXTI_Callback();
     }
 }
 
 
-void Test_Ultrasonic(void)
-{
-    // Inicializa el sensor y el contador de ciclos del núcleo
+void Test_Ultrasonic(void){
+    // Inicializamos el sensor (activa el DWT internamente)
     US_Init();
 
-    // Pantalla de bienvenida del test
+    // Pantalla de bienvenida
     OLED_Clear();
-    OLED_DrawString(10, 0, "ULTRASONICO", 1);
+    OLED_DrawString(10, 0, "SENSOR ACTIVO", 1);
     OLED_Update();
     HAL_Delay(1000);
 
     while (1) {
-        US_Trigger();   // Dispara el pulso de sonido
-        HAL_Delay(60);  // Espera a que el sonido vaya y vuelva (max 25ms)
 
+        // 1. Disparamos la ráfaga de ultrasonido
+        US_Trigger();
+
+        // 2. Esperamos un tiempo prudencial para que el sonido vuelva (max 25ms)
+        HAL_Delay(60);
+
+        // 3. Le pedimos a la librería que haga el cálculo
         float dist = US_GetDistance();
 
-        // Limpiamos el buffer de memoria de la pantalla
+        // --- ACTUALIZACIÓN DE PANTALLA ---
         OLED_Clear();
-        OLED_DrawString(10, 0, "ULTRASONICO", 1);
+        OLED_DrawString(10, 0, "TEST ULTRASONICO", 1);
         OLED_DrawHLine(0, 10, 128, 1);
 
         if (dist > 0) {
             OLED_DrawString(0, 30, "Distancia:", 1);
-            // Usamos la función nativa de la librería para floats (1 decimal)
+            // Dibujamos el float directo con 1 decimal
             OLED_DrawFloat(65, 30, dist, 1, 1);
             OLED_DrawString(105, 30, "cm", 1);
 
-            // Barra gráfica (opcional, para aprovechar el OLED)
+            // Barra gráfica para visualizar el rebote
             uint8_t barra = (uint8_t)(dist);
             if(barra > 128) barra = 128;
             OLED_FillRect(0, 50, barra, 10, 1);
         } else {
+            // Si el driver devuelve -1.0f (timeout o fuera de rango)
             OLED_DrawString(0, 30, "Sin lectura", 1);
         }
 
-        // Enviamos todo el frame por I2C DMA
+        // Mandamos el frame por DMA
         OLED_Update();
 
-        HAL_Delay(440); // Completa el medio segundo antes de medir de nuevo
+        // Completamos el ciclo para no saturar la pantalla
+        HAL_Delay(440);
     }
 }
 
