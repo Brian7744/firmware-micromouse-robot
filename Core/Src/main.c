@@ -33,6 +33,7 @@
 #include "sh1106.h"
 #include "motor.h"
 #include "ultrasonic.h"
+#include "ESP01.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -80,12 +81,17 @@ uint32_t valores = 10;
 uint8_t  BufUSBRx[256];
 uint8_t  nByteTx = 0;
 uint8_t  flagUSBRx = 0;
+
+
+uint8_t rx_byte; // Variable temporal para la interrupción de USART3
+_sESP01Handle miESP01; // Estructura de control del ESP-01
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c);
 void button_update();
 void trans_por_uart1();
@@ -95,6 +101,10 @@ void Test_Ultrasonic(void);
 void USBRXX(uint8_t *Buf, uint32_t Len);
 void Servo_SetAngle(uint8_t angle);
 void Test_Servo(void);
+int ESP01_EscribirUSART(uint8_t value);
+void ESP01_ControlarCHPD(uint8_t value);
+void ESP01_RecibirPayload(uint8_t value);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -138,6 +148,8 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   // Necesario para el control de los motores
   __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
@@ -146,6 +158,10 @@ int main(void)
   // === INICIO TIM1 (Botón + Servo) ===
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // Enciende la señal PWM en PA8
+
+  // === INICIO TIM4 (Temporizador ESP-01) ===
+  HAL_TIM_Base_Start_IT(&htim4);
+
 
   Motor_Init(&htim3, &htim2);
   // === INICIO OLED ===
@@ -158,7 +174,21 @@ int main(void)
   OLED_Init(&hi2c1);
   //Test_BothMotors();
   //HAL_USART_Init(&huart1);
-  Test_Ultrasonic();
+  //Test_Ultrasonic();
+
+  // === INICIALIZACIÓN ESP-01 ===
+  // 1. Llenamos la estructura con nuestras funciones puente
+  miESP01.WriteUSARTByte = ESP01_EscribirUSART;
+  miESP01.DoCHPD = ESP01_ControlarCHPD;
+  miESP01.WriteByteToBufRX = ESP01_RecibirPayload;
+
+  ESP01_Init(&miESP01);
+
+  // 2. Configuramos la red Wi-Fi (Poné el nombre y clave del router de tu casa/taller)
+  ESP01_SetWIFI(" Red Haffner", "21669051");
+
+  // 3. Dejamos escuchando a la interrupción de la USART3
+  HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
   //Test_Servo();
   /* USER CODE END 2 */
 
@@ -169,6 +199,19 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	    // La máquina de estados principal corre a máxima velocidad
+	    ESP01_Task();
+
+	    // Control de conexión UDP
+	    static uint8_t udp_iniciado = 0;
+	    if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
+	    	// Nos conectamos a una IP destino y puertos locales/remotos
+	    	// (Reemplazá la IP por la de tu compu si querés mandarle datos)
+	    	ESP01_StartUDP("192.168.0.11", 30000, 30000);
+	        udp_iniciado = 1;
+	    }
+
 	    if(flagUSBRx){
 	        if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
 	            flagUSBRx = 0;   // limpia solo si se envió bien
@@ -282,30 +325,33 @@ void trans_por_uart1(){
 	}
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
-	// Esta variable no pierde su valor entre interrupciones
-	static uint8_t divisor_100ms = 0;
+    // Esta variable no pierde su valor entre interrupciones
+    static uint8_t divisor_100ms = 0;
 
-	if(htim1->Instance == TIM1){
-		// 1. El botón se actualiza cada 20ms
-		button_update();
+    if(htim->Instance == TIM1){  // <--- Usar htim
+        // 1. El botón se actualiza cada 20ms
+        button_update();
 
-		// 2. Escalador: Solo entramos acá 1 de cada 5 veces
-		divisor_100ms++;
-		if(divisor_100ms >= 5){
-			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-			if(button_pressed_flag){
-				HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
-			    trans_por_uart1(); // Sigue transmitiendo al mismo ritmo de antes
-			} else {
-			    HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
-			}
-			divisor_100ms = 0; // Reiniciamos el contador
-		}
+        // 2. Escalador: Solo entramos acá 1 de cada 5 veces
+        divisor_100ms++;
+        if(divisor_100ms >= 5){
+            HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+            if(button_pressed_flag){
+                HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+                trans_por_uart1();
+            } else {
+                HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
+            }
+            divisor_100ms = 0;
+        }
+    }
 
-	}
-
+    // --- RUTINA TIM4: Base de tiempo ESP-01 (Se ejecuta cada 10ms exactos) ---
+    if(htim->Instance == TIM4){ // <--- Usar htim
+        ESP01_Timeout10ms();
+    }
 }
 
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
@@ -443,6 +489,55 @@ void Test_BothMotors(void){
 
         //Motor_BrakeAll();
         //HAL_Delay(1000);
+    }
+}
+
+
+
+// --- PUENTES PARA LA LIBRERÍA ESP-01 ---
+
+// 1. Función para enviar 1 byte al ESP-01 por USART3
+int ESP01_EscribirUSART(uint8_t value) {
+    // Usamos un timeout super corto (2ms) para no bloquear el robot
+    if(HAL_UART_Transmit(&huart3, &value, 1, 2) == HAL_OK) return 1;
+    return 0;
+}
+
+// 2. Función para resetear el chip físicamente (Supongamos pin PB1)
+void ESP01_ControlarCHPD(uint8_t value) {
+    // Cambiá GPIOB y GPIO_PIN_1 por el puerto y pin que configures en CubeMX
+    if(value) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+    }
+}
+
+// 3. Función donde caen los comandos limpios (tu Payload)
+void ESP01_RecibirPayload(uint8_t value) {
+    // Acá van a llegar los datos del joystick o de la PC por UDP.
+    // Por ahora lo mandamos a la consola USB para espiarlo:
+    //char debug_msg[16];
+    //sprintf(debug_msg, "RX: %c\r\n", value);
+    //USBRXX((uint8_t*)debug_msg, strlen(debug_msg));
+
+    char debug_msg[16];
+    sprintf(debug_msg, "RX: %c\r\n", value);
+
+    // Redirigimos la salida a la UART1 (Conversor TTL)
+    // Le ponemos un timeout de 10ms para no trabar el robot
+    HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 10);
+}
+
+// 4. Interrupción de Recepción USART (Se llama sola cuando llega un byte)
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if(huart->Instance == USART3) {
+        // Le pasamos el byte a la máquina de estados del profe
+        ESP01_WriteRX(rx_byte);
+
+        // Volvemos a armar la trampa para el siguiente byte
+        HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
     }
 }
 
