@@ -45,6 +45,13 @@ typedef enum{
     BUTTON_DOWN,
     BUTTON_RISING
 } _eButtonState;
+
+typedef enum {
+    MODO_WIFI_IP = 0,
+    MODO_MOTORES_SERVO,
+    MODO_ULTRASONICO,
+    MODO_LINEA_ADC
+} ModoDemo_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -68,6 +75,8 @@ extern I2C_HandleTypeDef hi2c1;
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
 
+volatile uint8_t boton_presionado = 0;
+
 /*Variable para debuggear el ultrasonico*/
 volatile uint32_t eco_interrupciones = 0;
 
@@ -87,11 +96,13 @@ uint8_t  flagUSBRx = 0;
 uint8_t rx_byte; // Variable temporal para la interrupción de USART3
 _sESP01Handle miESP01; // Estructura de control del ESP-01
 
-
+volatile ModoDemo_t modo_actual = MODO_WIFI_IP;
+char wifi_ip[16] = "Conectando...";
 
 //volatile uint16_t valor_tcrt = 0;       // El ADC es de 12 bits (0 a 4095)
 //volatile uint8_t adc_actualizado = 0;   // Bandera de interrupción
 volatile uint16_t adc_buffer[2]; // adc_buffer[0] = PA0, adc_buffer[1] = PA1
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -159,6 +170,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+
   // Necesario para el control de los motores
   __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
   __HAL_AFIO_REMAP_SWJ_NOJTAG();    // Libera PB3, PB4 y PB15 apagando el JTAG
@@ -180,9 +192,9 @@ int main(void)
   //    OLED_Update(); // Dispara el envío por DMA
   //}
   OLED_Init(&hi2c1);
-  //Test_BothMotors();
+
   //HAL_USART_Init(&huart1);
-  //Test_Ultrasonic();
+
 
   // === INICIALIZACIÓN ESP-01 ===
   // 1. Llenamos la estructura con nuestras funciones puente
@@ -191,17 +203,18 @@ int main(void)
   miESP01.WriteByteToBufRX = ESP01_RecibirPayload;
 
   ESP01_Init(&miESP01);
-
   // 2. Configuramos la red Wi-Fi (Poné el nombre y clave del router de tu casa/taller)
   ESP01_SetWIFI(" Red Haffner", "21669051");
 
   // 3. Dejamos escuchando a la interrupción de la USART3
   HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
-
-  Test_TCRT5000();
-
+  // Arrancamos el ADC conectado al motor DMA para que corra de fondo
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 2);
 
   //Test_Servo();
+  //Test_TCRT5000();
+  //Test_Ultrasonic();
+  //Test_BothMotors();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -213,22 +226,111 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 	    // La máquina de estados principal corre a máxima velocidad
-	    ESP01_Task();
+	    //ESP01_Task();
 
 	    // Control de conexión UDP
-	    static uint8_t udp_iniciado = 0;
-	    if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
+	    //static uint8_t udp_iniciado = 0;
+	    //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
 	    	// Nos conectamos a una IP destino y puertos locales/remotos
 	    	// (Reemplazá la IP por la de tu compu si querés mandarle datos)
-	    	ESP01_StartUDP("192.168.0.11", 30000, 30000);
-	        udp_iniciado = 1;
-	    }
+	    //	ESP01_StartUDP("192.168.0.11", 30000, 30000);
+	    //    udp_iniciado = 1;
+	    //}
 
-	    if(flagUSBRx){
-	        if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
-	            flagUSBRx = 0;   // limpia solo si se envió bien
-	        }
-	    }
+	    //if(flagUSBRx){
+	    //    if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
+	    //        flagUSBRx = 0;   // limpia solo si se envió bien
+	    //    }
+	    //}
+	     ESP01_Task();
+
+	      static uint8_t udp_iniciado = 0;
+	      if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
+	          ESP01_StartUDP("192.168.0.11", 30000, 30000);
+	          udp_iniciado = 1;
+	      }
+
+	      if(flagUSBRx){
+	          if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
+	              flagUSBRx = 0;
+	          }
+	      }
+/*
+	      // --- 2. CONTROL DE PANTALLAS (Máquina de Estados) ---
+	      if (boton_presionado) {
+	          boton_presionado = 0;
+	          OLED_Clear();
+	          Motor_BrakeAll(); // Seguridad al cambiar de pantalla
+	      }
+
+	      switch (modo_actual) {
+
+	          case MODO_WIFI_IP:
+	              OLED_DrawString(0, 0, "1. TELEMETRIA WIFI", 1);
+	              OLED_DrawString(0, 15, "Red: Red Haffner", 1);
+	              OLED_DrawString(0, 30, "IP:", 1);
+	              OLED_DrawString(25, 30, wifi_ip, 1);
+	              OLED_DrawString(0, 48, "Status: UDP Activo", 1);
+	              OLED_Update();
+	              break;
+
+	          case MODO_MOTORES_SERVO:
+	              OLED_DrawString(0, 0, "2. ACTUADORES", 1);
+	              OLED_DrawString(0, 20, "Motores: Test", 1);
+	              OLED_DrawString(0, 35, "Servo: Test", 1);
+	              OLED_Update();
+
+	              uint32_t tiempo = HAL_GetTick() % 4000;
+	              if (tiempo < 1000) {
+	                  Motor_SetSpeed(MOTOR_LEFT, 5000);
+	                  Motor_SetSpeed(MOTOR_RIGHT, 5000);
+	                  Servo_SetAngle(0);
+	              } else if (tiempo < 2000) {
+	                  Motor_BrakeAll();
+	                  Servo_SetAngle(90);
+	              } else if (tiempo < 3000) {
+	                  Motor_SetSpeed(MOTOR_LEFT, -5000);
+	                  Motor_SetSpeed(MOTOR_RIGHT, -5000);
+	                  Servo_SetAngle(180);
+	              } else {
+	                  Motor_BrakeAll();
+	                  Servo_SetAngle(90);
+	              }
+	              break;
+
+	          case MODO_ULTRASONICO:
+	              US_Trigger();
+	              HAL_Delay(50);
+	              float distancia = US_GetDistance(); // OJO: Si el cable está mal, se traba acá
+
+	              OLED_DrawString(0, 0, "3. ULTRASONICO", 1);
+	              if (distancia > 0.0f) {
+	                  OLED_DrawFloat(0, 25, distancia, 1, 1);
+	                  OLED_DrawString(35, 25, "cm", 1);
+	                  uint8_t barra = (distancia > 50.0f) ? 128 : (uint8_t)((distancia * 128.0f) / 50.0f);
+	                  OLED_FillRect(0, 40, barra, 8, 1);
+	              } else {
+	                  OLED_DrawString(0, 25, "Falla hardware", 1);
+	              }
+	              OLED_Update();
+	              break;
+
+	          case MODO_LINEA_ADC:
+	              OLED_DrawString(0, 0, "4. SENSORES LINEA", 1);
+	              OLED_DrawString(0, 20, "S1:", 1);
+	              OLED_DrawInt(25, 20, adc_buffer[0], 1);
+	              OLED_FillRect(0, 32, (adc_buffer[0] * 128) / 4095, 5, 1);
+
+	              OLED_DrawString(0, 42, "S2:", 1);
+	              OLED_DrawInt(25, 42, adc_buffer[1], 1);
+	              OLED_FillRect(0, 54, (adc_buffer[1] * 128) / 4095, 5, 1);
+
+	              OLED_Update();
+	              HAL_Delay(50);
+	              break;
+	      }
+
+*/
 
   }
   /* USER CODE END 3 */
@@ -282,7 +384,8 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void button_update(){
+/*
+void button_update(void) {
 
     switch(button_state)
     {
@@ -295,7 +398,15 @@ void button_update(){
         case BUTTON_FALLING:
             if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
                 button_state = BUTTON_DOWN;
-                button_pressed_flag++;
+
+                // ¡ACÁ ES EL MOMENTO EXACTO DE LA PULSACIÓN CONFIRMADA!
+                // Avanzamos al siguiente modo de la pantalla
+                modo_actual++;
+                if (modo_actual > MODO_LINEA_ADC) {
+                    modo_actual = MODO_WIFI_IP; // Reiniciamos el lazo circular
+                }
+                boton_presionado = 1; // Le avisa al while(1) que limpie el OLED
+
             } else {
                 button_state = BUTTON_UP;
             }
@@ -310,7 +421,6 @@ void button_update(){
         case BUTTON_RISING:
             if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
                 button_state = BUTTON_UP;
-                //button_pressed_flag=0;
             } else {
                 button_state = BUTTON_DOWN;
             }
@@ -320,12 +430,32 @@ void button_update(){
             button_state = BUTTON_UP;
             break;
     }
+}
+*/
 
-    if(button_pressed_flag==2){
-    	button_pressed_flag=0;
+void button_update(void) {
+    // Máquina de estados ultra simplificada para el botón
+    switch(button_state) {
+        case 0: // UP
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 1;
+            break;
+        case 1: // FALLING (Pulsación confirmada)
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                modo_actual++;
+                if (modo_actual > MODO_LINEA_ADC) modo_actual = MODO_WIFI_IP;
+                boton_presionado = 1;
+                button_state = 2;
+            } else button_state = 0;
+            break;
+        case 2: // DOWN
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 3;
+            break;
+        case 3: // RISING
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 0;
+            else button_state = 2;
+            break;
     }
 }
-
 void trans_por_uart1(){
 
 	flagSec++;
@@ -448,13 +578,27 @@ void Servo_SetAngle(uint8_t angle){
 void Test_Servo(void){
     while(1)
     {
-        Servo_SetAngle(0);
-        HAL_Delay(1000);
+        //Servo_SetAngle(0);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(90);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(180);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(90);
+        //HAL_Delay(1000);
+
+
+
+        Servo_SetAngle(10);  // En vez de 0, lo dejamos respirar
+	    HAL_Delay(1000);
 
         Servo_SetAngle(90);
         HAL_Delay(1000);
 
-        Servo_SetAngle(180);
+        Servo_SetAngle(170); // En vez de 180, evitamos el tope físico
         HAL_Delay(1000);
 
         Servo_SetAngle(90);
@@ -543,13 +687,23 @@ void ESP01_RecibirPayload(uint8_t value) {
 }
 
 // 4. Interrupción de Recepción USART (Se llama sola cuando llega un byte)
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if(huart->Instance == USART3) {
-        // Le pasamos el byte a la máquina de estados del profe
-        ESP01_WriteRX(rx_byte);
+        // Sniffer ultra rápido de IP
+        static uint8_t idx = 0, capturando = 0, match_idx = 0;
+        static const char match[] = "STAIP,\"";
 
-        // Volvemos a armar la trampa para el siguiente byte
+        if (!capturando) {
+            if (rx_byte == match[match_idx]) {
+                match_idx++;
+                if (match[match_idx] == '\0') { capturando = 1; idx = 0; match_idx = 0; }
+            } else match_idx = (rx_byte == match[0]) ? 1 : 0;
+        } else {
+            if (rx_byte == '"' || idx >= 15) { wifi_ip[idx] = '\0'; capturando = 0; idx = 0; }
+            else wifi_ip[idx++] = rx_byte;
+        }
+
+        ESP01_WriteRX(rx_byte);
         HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
     }
 }
