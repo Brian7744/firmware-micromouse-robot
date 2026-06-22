@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "dma.h"
 #include "i2c.h"
 #include "tim.h"
@@ -86,6 +87,11 @@ uint8_t  flagUSBRx = 0;
 uint8_t rx_byte; // Variable temporal para la interrupción de USART3
 _sESP01Handle miESP01; // Estructura de control del ESP-01
 
+
+
+volatile uint16_t valor_tcrt = 0;       // El ADC es de 12 bits (0 a 4095)
+volatile uint8_t adc_actualizado = 0;   // Bandera de interrupción
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,6 +111,8 @@ int ESP01_EscribirUSART(uint8_t value);
 void ESP01_ControlarCHPD(uint8_t value);
 void ESP01_RecibirPayload(uint8_t value);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
+void Test_TCRT5000(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -150,6 +158,7 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_USART3_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   // Necesario para el control de los motores
   __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
@@ -189,6 +198,10 @@ int main(void)
 
   // 3. Dejamos escuchando a la interrupción de la USART3
   HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
+
+  Test_TCRT5000();
+
+
   //Test_Servo();
   /* USER CODE END 2 */
 
@@ -260,7 +273,8 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
   PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
@@ -494,7 +508,7 @@ void Test_BothMotors(void){
 
 
 
-// --- PUENTES PARA LA LIBRERÍA ESP-01 ---
+// --- PUENTES PARA LA LIBRER�?A ESP-01 ---
 
 // 1. Función para enviar 1 byte al ESP-01 por USART3
 int ESP01_EscribirUSART(uint8_t value) {
@@ -540,6 +554,52 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
     }
 }
+
+
+// Se ejecuta automáticamente cuando el ADC termina de medir
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    if(hadc->Instance == ADC1) {
+        // Leemos el registro de datos y bajamos la bandera
+        valor_tcrt = HAL_ADC_GetValue(&hadc1);
+        adc_actualizado = 1;
+    }
+}
+
+void Test_TCRT5000(void) {
+    OLED_Clear();
+    OLED_DrawString(10, 0, "CALIBRACION IR", 1);
+    OLED_Update();
+    HAL_Delay(1000);
+
+    while(1) {
+        // 1. Disparamos la lectura del ADC por hardware y seguimos de largo
+        HAL_ADC_Start_IT(&hadc1);
+
+        // 2. Si la interrupción nos avisa que ya hay un dato fresco:
+        if (adc_actualizado) {
+            adc_actualizado = 0; // Limpiamos la bandera
+
+            OLED_Clear();
+            OLED_DrawString(0, 0, "Sensor TCRT5000", 1);
+
+            OLED_DrawString(0, 20, "Valor:", 1);
+            OLED_DrawInt(50, 20, valor_tcrt, 1);
+
+            // Calculamos un porcentaje rápido para la barra gráfica
+            // (valor_tcrt * 128 pixeles) / 4095
+            uint8_t barra = (valor_tcrt * 128) / 4095;
+
+            OLED_DrawString(0, 35, "Barra:", 1);
+            OLED_FillRect(0, 48, barra, 10, 1);
+
+            OLED_Update();
+        }
+
+        // Hacemos unas 10 lecturas por segundo para poder verlas con el ojo humano
+        HAL_Delay(100);
+    }
+}
+/* USER CODE END 4 */
 
 void USBRXX(uint8_t *Buf, uint32_t Len){
 

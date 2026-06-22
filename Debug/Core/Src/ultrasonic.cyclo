@@ -1,9 +1,6 @@
-../Core/Src/ultrasonic.c:22:13:DWT_Init	1
-../Core/Src/ultrasonic.c:30:24:DWT_GetCycles	1
-../Core/Src/ultrasonic.c:36:13:delay_us	2
 ../Core/Src/ultrasonic.c:45:6:US_Init	1
 ../Core/Src/ultrasonic.c:59:6:US_Trigger	4
 ../Core/Src/ultrasonic.c:74:6:US_EXTI_Callback	6
 ../Core/Src/ultrasonic.c:111:7:US_GetDistance	1
 ../Core/Src/ultrasonic.c:116:18:US_GetData	1
-../Core/Src/ultrasonic.c:121:9:US_IsObstacle	3
+../Core/Src/ultrasonic.c:121:9:US_IsObstacle	2
