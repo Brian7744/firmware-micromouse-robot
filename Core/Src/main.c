@@ -89,9 +89,9 @@ _sESP01Handle miESP01; // Estructura de control del ESP-01
 
 
 
-volatile uint16_t valor_tcrt = 0;       // El ADC es de 12 bits (0 a 4095)
-volatile uint8_t adc_actualizado = 0;   // Bandera de interrupción
-
+//volatile uint16_t valor_tcrt = 0;       // El ADC es de 12 bits (0 a 4095)
+//volatile uint8_t adc_actualizado = 0;   // Bandera de interrupción
+volatile uint16_t adc_buffer[2]; // adc_buffer[0] = PA0, adc_buffer[1] = PA1
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,7 +111,6 @@ int ESP01_EscribirUSART(uint8_t value);
 void ESP01_ControlarCHPD(uint8_t value);
 void ESP01_RecibirPayload(uint8_t value);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
 void Test_TCRT5000(void);
 /* USER CODE END PFP */
 
@@ -556,50 +555,37 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 
 
-// Se ejecuta automáticamente cuando el ADC termina de medir
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    if(hadc->Instance == ADC1) {
-        // Leemos el registro de datos y bajamos la bandera
-        valor_tcrt = HAL_ADC_GetValue(&hadc1);
-        adc_actualizado = 1;
-    }
-}
-
 void Test_TCRT5000(void) {
     OLED_Clear();
-    OLED_DrawString(10, 0, "CALIBRACION IR", 1);
+    OLED_DrawString(0, 0, "CALIBRACION DMA", 1);
     OLED_Update();
     HAL_Delay(1000);
 
+    // Arrancamos el ADC conectado al motor DMA (modo circular)
+    // El hardware se encarga de mantener adc_buffer SIEMPRE actualizado
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 2);
+
     while(1) {
-        // 1. Disparamos la lectura del ADC por hardware y seguimos de largo
-        HAL_ADC_Start_IT(&hadc1);
+        OLED_Clear();
+        OLED_DrawString(0, 0, "Sensores TCRT5000", 1);
 
-        // 2. Si la interrupción nos avisa que ya hay un dato fresco:
-        if (adc_actualizado) {
-            adc_actualizado = 0; // Limpiamos la bandera
+        // Sensor 1 (PA0)
+        OLED_DrawString(0, 20, "S1:", 1);
+        OLED_DrawInt(25, 20, adc_buffer[0], 1);
+        uint8_t barra1 = (adc_buffer[0] * 128) / 4095;
+        OLED_FillRect(0, 32, barra1, 5, 1);
 
-            OLED_Clear();
-            OLED_DrawString(0, 0, "Sensor TCRT5000", 1);
+        // Sensor 2 (PA1)
+        OLED_DrawString(0, 42, "S2:", 1);
+        OLED_DrawInt(25, 42, adc_buffer[1], 1);
+        uint8_t barra2 = (adc_buffer[1] * 128) / 4095;
+        OLED_FillRect(0, 54, barra2, 5, 1);
 
-            OLED_DrawString(0, 20, "Valor:", 1);
-            OLED_DrawInt(50, 20, valor_tcrt, 1);
+        OLED_Update();
 
-            // Calculamos un porcentaje rápido para la barra gráfica
-            // (valor_tcrt * 128 pixeles) / 4095
-            uint8_t barra = (valor_tcrt * 128) / 4095;
-
-            OLED_DrawString(0, 35, "Barra:", 1);
-            OLED_FillRect(0, 48, barra, 10, 1);
-
-            OLED_Update();
-        }
-
-        // Hacemos unas 10 lecturas por segundo para poder verlas con el ojo humano
-        HAL_Delay(100);
+        HAL_Delay(50); // Refresco visual rápido
     }
 }
-/* USER CODE END 4 */
 
 void USBRXX(uint8_t *Buf, uint32_t Len){
 
@@ -613,7 +599,7 @@ void USBRXX(uint8_t *Buf, uint32_t Len){
     }
 
     nByteTx   = Len + 4;
-    flagUSBRx = 1;          // avisa al while(1) que hay dato
+    flagUSBRx = 1;         // avisa al while(1) que hay dato
 }
 /* USER CODE END 4 */
 
