@@ -18,14 +18,23 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
+#include "dma.h"
+#include "i2c.h"
 #include "tim.h"
 #include "usart.h"
+#include "usb_device.h"
 #include "gpio.h"
-#include <stdio.h>
-#include <string.h>
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "usbd_cdc_if.h"
+#include <stdio.h>
+#include <string.h>
+#include "sh1106.h"
+#include "motor.h"
+#include "ultrasonic.h"
+#include "ESP01.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +45,13 @@ typedef enum{
     BUTTON_DOWN,
     BUTTON_RISING
 } _eButtonState;
+
+typedef enum {
+    MODO_WIFI_IP = 0,
+    MODO_MOTORES_SERVO,
+    MODO_ULTRASONICO,
+    MODO_LINEA_ADC
+} ModoDemo_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -54,24 +70,59 @@ typedef enum{
 /* handler declaration*/
 extern TIM_HandleTypeDef htim1;
 extern UART_HandleTypeDef huart1;
+extern I2C_HandleTypeDef hi2c1;
 
 uint8_t button_pressed_flag = 0;
 _eButtonState button_state = BUTTON_UP;
 
-char msg[32];
+volatile uint8_t boton_presionado = 0;
 
+/*Variable para debuggear el ultrasonico*/
+volatile uint32_t eco_interrupciones = 0;
+
+char msg[32];
+uint8_t texto[] = "Mensaje STM32\r\n";
 uint8_t flagSec = 0;
 
 /*Variable de prueba*/
 uint32_t valores = 10;
+
+/*Variables para el USB*/
+uint8_t  BufUSBRx[256];
+uint8_t  nByteTx = 0;
+uint8_t  flagUSBRx = 0;
+
+
+uint8_t rx_byte; // Variable temporal para la interrupción de USART3
+_sESP01Handle miESP01; // Estructura de control del ESP-01
+
+volatile ModoDemo_t modo_actual = MODO_WIFI_IP;
+char wifi_ip[16] = "Conectando...";
+
+//volatile uint16_t valor_tcrt = 0;       // El ADC es de 12 bits (0 a 4095)
+//volatile uint8_t adc_actualizado = 0;   // Bandera de interrupción
+volatile uint16_t adc_buffer[2]; // adc_buffer[0] = PA0, adc_buffer[1] = PA1
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1);
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c);
 void button_update();
 void trans_por_uart1();
+void Test_BothMotors(void);
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+void Test_Ultrasonic(void);
+void USBRXX(uint8_t *Buf, uint32_t Len);
+void Servo_SetAngle(uint8_t angle);
+void Test_Servo(void);
+int ESP01_EscribirUSART(uint8_t value);
+void ESP01_ControlarCHPD(uint8_t value);
+void ESP01_RecibirPayload(uint8_t value);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void Test_TCRT5000(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -108,11 +159,62 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
+  MX_USB_DEVICE_Init();
+  MX_I2C1_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_USART3_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+
+  // Necesario para el control de los motores
+  __HAL_RCC_AFIO_CLK_ENABLE();      // Habilita reloj de funciones alternativas
+  __HAL_AFIO_REMAP_SWJ_NOJTAG();    // Libera PB3, PB4 y PB15 apagando el JTAG
+
+  // === INICIO TIM1 (Botón + Servo) ===
   HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // Enciende la señal PWM en PA8
+
+  // === INICIO TIM4 (Temporizador ESP-01) ===
+  HAL_TIM_Base_Start_IT(&htim4);
+
+
+  Motor_Init(&htim3, &htim2);
+  // === INICIO OLED ===
+  //if (OLED_Init(&hi2c1) == 0) {
+  //    OLED_Clear();
+  //    OLED_DrawString(10, 10, "DISPLAY OK!", 1);
+  //    OLED_DrawString(10, 30, "Modo: FASE 2", 1);
+  //    OLED_Update(); // Dispara el envío por DMA
+  //}
+  OLED_Init(&hi2c1);
+
   //HAL_USART_Init(&huart1);
+
+
+  // === INICIALIZACIÓN ESP-01 ===
+  // 1. Llenamos la estructura con nuestras funciones puente
+  miESP01.WriteUSARTByte = ESP01_EscribirUSART;
+  miESP01.DoCHPD = ESP01_ControlarCHPD;
+  miESP01.WriteByteToBufRX = ESP01_RecibirPayload;
+
+  ESP01_Init(&miESP01);
+  // 2. Configuramos la red Wi-Fi (Poné el nombre y clave del router de tu casa/taller)
+  ESP01_SetWIFI(" Red Haffner", "21669051");
+
+  // 3. Dejamos escuchando a la interrupción de la USART3
+  HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
+  // Arrancamos el ADC conectado al motor DMA para que corra de fondo
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 2);
+
+  //Test_Servo();
+  //Test_TCRT5000();
+  //Test_Ultrasonic();
+  //Test_BothMotors();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -122,6 +224,114 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	    // La máquina de estados principal corre a máxima velocidad
+	    //ESP01_Task();
+
+	    // Control de conexión UDP
+	    //static uint8_t udp_iniciado = 0;
+	    //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
+	    	// Nos conectamos a una IP destino y puertos locales/remotos
+	    	// (Reemplazá la IP por la de tu compu si querés mandarle datos)
+	    //	ESP01_StartUDP("192.168.0.11", 30000, 30000);
+	    //    udp_iniciado = 1;
+	    //}
+
+	    //if(flagUSBRx){
+	    //    if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
+	    //        flagUSBRx = 0;   // limpia solo si se envió bien
+	    //    }
+	    //}
+	     ESP01_Task();
+
+	      static uint8_t udp_iniciado = 0;
+	      if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED && !udp_iniciado) {
+	          ESP01_StartUDP("192.168.0.11", 30000, 30000);
+	          udp_iniciado = 1;
+	      }
+
+	      if(flagUSBRx){
+	          if(CDC_Transmit_FS(BufUSBRx, nByteTx) == USBD_OK){
+	              flagUSBRx = 0;
+	          }
+	      }
+/*
+	      // --- 2. CONTROL DE PANTALLAS (Máquina de Estados) ---
+	      if (boton_presionado) {
+	          boton_presionado = 0;
+	          OLED_Clear();
+	          Motor_BrakeAll(); // Seguridad al cambiar de pantalla
+	      }
+
+	      switch (modo_actual) {
+
+	          case MODO_WIFI_IP:
+	              OLED_DrawString(0, 0, "1. TELEMETRIA WIFI", 1);
+	              OLED_DrawString(0, 15, "Red: Red Haffner", 1);
+	              OLED_DrawString(0, 30, "IP:", 1);
+	              OLED_DrawString(25, 30, wifi_ip, 1);
+	              OLED_DrawString(0, 48, "Status: UDP Activo", 1);
+	              OLED_Update();
+	              break;
+
+	          case MODO_MOTORES_SERVO:
+	              OLED_DrawString(0, 0, "2. ACTUADORES", 1);
+	              OLED_DrawString(0, 20, "Motores: Test", 1);
+	              OLED_DrawString(0, 35, "Servo: Test", 1);
+	              OLED_Update();
+
+	              uint32_t tiempo = HAL_GetTick() % 4000;
+	              if (tiempo < 1000) {
+	                  Motor_SetSpeed(MOTOR_LEFT, 5000);
+	                  Motor_SetSpeed(MOTOR_RIGHT, 5000);
+	                  Servo_SetAngle(0);
+	              } else if (tiempo < 2000) {
+	                  Motor_BrakeAll();
+	                  Servo_SetAngle(90);
+	              } else if (tiempo < 3000) {
+	                  Motor_SetSpeed(MOTOR_LEFT, -5000);
+	                  Motor_SetSpeed(MOTOR_RIGHT, -5000);
+	                  Servo_SetAngle(180);
+	              } else {
+	                  Motor_BrakeAll();
+	                  Servo_SetAngle(90);
+	              }
+	              break;
+
+	          case MODO_ULTRASONICO:
+	              US_Trigger();
+	              HAL_Delay(50);
+	              float distancia = US_GetDistance(); // OJO: Si el cable está mal, se traba acá
+
+	              OLED_DrawString(0, 0, "3. ULTRASONICO", 1);
+	              if (distancia > 0.0f) {
+	                  OLED_DrawFloat(0, 25, distancia, 1, 1);
+	                  OLED_DrawString(35, 25, "cm", 1);
+	                  uint8_t barra = (distancia > 50.0f) ? 128 : (uint8_t)((distancia * 128.0f) / 50.0f);
+	                  OLED_FillRect(0, 40, barra, 8, 1);
+	              } else {
+	                  OLED_DrawString(0, 25, "Falla hardware", 1);
+	              }
+	              OLED_Update();
+	              break;
+
+	          case MODO_LINEA_ADC:
+	              OLED_DrawString(0, 0, "4. SENSORES LINEA", 1);
+	              OLED_DrawString(0, 20, "S1:", 1);
+	              OLED_DrawInt(25, 20, adc_buffer[0], 1);
+	              OLED_FillRect(0, 32, (adc_buffer[0] * 128) / 4095, 5, 1);
+
+	              OLED_DrawString(0, 42, "S2:", 1);
+	              OLED_DrawInt(25, 42, adc_buffer[1], 1);
+	              OLED_FillRect(0, 54, (adc_buffer[1] * 128) / 4095, 5, 1);
+
+	              OLED_Update();
+	              HAL_Delay(50);
+	              break;
+	      }
+
+*/
+
   }
   /* USER CODE END 3 */
 }
@@ -134,6 +344,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -163,10 +374,18 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /* USER CODE BEGIN 4 */
-void button_update(){
+/*
+void button_update(void) {
 
     switch(button_state)
     {
@@ -179,7 +398,15 @@ void button_update(){
         case BUTTON_FALLING:
             if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
                 button_state = BUTTON_DOWN;
-                button_pressed_flag++;
+
+                // ¡ACÁ ES EL MOMENTO EXACTO DE LA PULSACIÓN CONFIRMADA!
+                // Avanzamos al siguiente modo de la pantalla
+                modo_actual++;
+                if (modo_actual > MODO_LINEA_ADC) {
+                    modo_actual = MODO_WIFI_IP; // Reiniciamos el lazo circular
+                }
+                boton_presionado = 1; // Le avisa al while(1) que limpie el OLED
+
             } else {
                 button_state = BUTTON_UP;
             }
@@ -194,7 +421,6 @@ void button_update(){
         case BUTTON_RISING:
             if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
                 button_state = BUTTON_UP;
-                //button_pressed_flag=0;
             } else {
                 button_state = BUTTON_DOWN;
             }
@@ -204,12 +430,32 @@ void button_update(){
             button_state = BUTTON_UP;
             break;
     }
+}
+*/
 
-    if(button_pressed_flag==2){
-    	button_pressed_flag=0;
+void button_update(void) {
+    // Máquina de estados ultra simplificada para el botón
+    switch(button_state) {
+        case 0: // UP
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 1;
+            break;
+        case 1: // FALLING (Pulsación confirmada)
+            if (!HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) {
+                modo_actual++;
+                if (modo_actual > MODO_LINEA_ADC) modo_actual = MODO_WIFI_IP;
+                boton_presionado = 1;
+                button_state = 2;
+            } else button_state = 0;
+            break;
+        case 2: // DOWN
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 3;
+            break;
+        case 3: // RISING
+            if (HAL_GPIO_ReadPin(SW0_GPIO_Port, SW0_Pin)) button_state = 0;
+            else button_state = 2;
+            break;
     }
 }
-
 void trans_por_uart1(){
 
 	flagSec++;
@@ -222,17 +468,292 @@ void trans_por_uart1(){
 	}
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim1){
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
-	HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	button_update();
-	if(button_pressed_flag){
-		HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
-		trans_por_uart1();
-	}else{
-		HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, 0);
-	}
+    // Esta variable no pierde su valor entre interrupciones
+    static uint8_t divisor_100ms = 0;
 
+    if(htim->Instance == TIM1){  // <--- Usar htim
+        // 1. El botón se actualiza cada 20ms
+        button_update();
+
+        // 2. Escalador: Solo entramos acá 1 de cada 5 veces
+        divisor_100ms++;
+        if(divisor_100ms >= 5){
+            HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+            if(button_pressed_flag){
+                HAL_GPIO_TogglePin(LEDEX_GPIO_Port, LEDEX_Pin);
+                trans_por_uart1();
+            } else {
+                HAL_GPIO_WritePin(LEDEX_GPIO_Port, LEDEX_Pin, GPIO_PIN_RESET);
+            }
+            divisor_100ms = 0;
+        }
+    }
+
+    // --- RUTINA TIM4: Base de tiempo ESP-01 (Se ejecuta cada 10ms exactos) ---
+    if(htim->Instance == TIM4){ // <--- Usar htim
+        ESP01_Timeout10ms();
+    }
+}
+
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c){
+    // Esta función la llama el hardware automáticamente cuando el DMA termina
+    OLED_DMA_TxCpltCallback(hi2c);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+    // Si la interrupción viene del pin 13 (Echo del sensor)
+    if(GPIO_Pin == GPIO_PIN_13){
+    	eco_interrupciones++;
+    	US_EXTI_Callback();
+    }
+}
+
+
+void Test_Ultrasonic(void){
+    // Inicializamos el sensor (activa el DWT internamente)
+    US_Init();
+
+    // Pantalla de bienvenida
+    OLED_Clear();
+    OLED_DrawString(10, 0, "SENSOR ACTIVO", 1);
+    OLED_Update();
+    HAL_Delay(1000);
+
+    while (1) {
+
+        // 1. Disparamos la ráfaga de ultrasonido
+        US_Trigger();
+
+        // 2. Esperamos un tiempo prudencial para que el sonido vuelva (max 25ms)
+        HAL_Delay(60);
+
+        // 3. Le pedimos a la librería que haga el cálculo
+        float dist = US_GetDistance();
+
+        // --- ACTUALIZACIÓN DE PANTALLA ---
+        OLED_Clear();
+        OLED_DrawString(10, 0, "TEST ULTRASONICO", 1);
+        OLED_DrawHLine(0, 10, 128, 1);
+
+        if (dist > 0) {
+            OLED_DrawString(0, 30, "Distancia:", 1);
+            // Dibujamos el float directo con 1 decimal
+            OLED_DrawFloat(65, 30, dist, 1, 1);
+            OLED_DrawString(105, 30, "cm", 1);
+
+            // Barra gráfica para visualizar el rebote
+            uint8_t barra = (uint8_t)(dist);
+            if(barra > 128) barra = 128;
+            OLED_FillRect(0, 50, barra, 10, 1);
+        } else {
+            // Si el driver devuelve -1.0f (timeout o fuera de rango)
+            OLED_DrawString(0, 30, "Sin lectura", 1);
+        }
+
+        // Mandamos el frame por DMA
+        OLED_Update();
+
+        // Completamos el ciclo para no saturar la pantalla
+        HAL_Delay(440);
+    }
+}
+
+
+/**
+  * @brief  Mueve el servo a un ángulo específico (0 a 180 grados)
+  * @param  angle: Grados deseados
+  */
+void Servo_SetAngle(uint8_t angle){
+    if(angle > 180) angle = 180;
+
+    // Mapeo lineal: 0° -> 0.5ms (500 cuentas) | 180° -> 2.5ms (2500 cuentas)
+    uint32_t compare_value = 500 + ((angle * 2000) / 180);
+
+    // Cargamos el registro del TIM1 Canal 1 (Pin PA8)
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, compare_value);
+}
+
+void Test_Servo(void){
+    while(1)
+    {
+        //Servo_SetAngle(0);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(90);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(180);
+        //HAL_Delay(1000);
+
+        //Servo_SetAngle(90);
+        //HAL_Delay(1000);
+
+
+
+        Servo_SetAngle(10);  // En vez de 0, lo dejamos respirar
+	    HAL_Delay(1000);
+
+        Servo_SetAngle(90);
+        HAL_Delay(1000);
+
+        Servo_SetAngle(170); // En vez de 180, evitamos el tope físico
+        HAL_Delay(1000);
+
+        Servo_SetAngle(90);
+        HAL_Delay(1000);
+    }
+}
+
+void Test_BothMotors(void){
+    // Inicializa los drivers usando los timers de tu main
+    Motor_Init(&htim3, &htim2);
+
+    int16_t speed = 5000;  // 50% de la velocidad máxima (9999)
+
+    while (1) {
+        // Adelante
+        Motor_SetSpeed(MOTOR_LEFT, speed);
+        Motor_SetSpeed(MOTOR_RIGHT, speed);
+        HAL_Delay(2000);
+
+        // Frenar
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Reversa
+        //Motor_SetSpeed(MOTOR_LEFT, -speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, -speed);
+        //HAL_Delay(2000);
+
+        // Frenar
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Giro derecha (izq adelante, der reversa)
+        //Motor_SetSpeed(MOTOR_LEFT, speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, -speed);
+        //HAL_Delay(1500);
+
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+
+        // Giro izquierda
+        //Motor_SetSpeed(MOTOR_LEFT, -speed);
+        //Motor_SetSpeed(MOTOR_RIGHT, speed);
+        //HAL_Delay(1500);
+
+        //Motor_BrakeAll();
+        //HAL_Delay(1000);
+    }
+}
+
+
+
+// --- PUENTES PARA LA LIBRER�?A ESP-01 ---
+
+// 1. Función para enviar 1 byte al ESP-01 por USART3
+int ESP01_EscribirUSART(uint8_t value) {
+    // Usamos un timeout super corto (2ms) para no bloquear el robot
+    if(HAL_UART_Transmit(&huart3, &value, 1, 2) == HAL_OK) return 1;
+    return 0;
+}
+
+// 2. Función para resetear el chip físicamente (Supongamos pin PB1)
+void ESP01_ControlarCHPD(uint8_t value) {
+    // Cambiá GPIOB y GPIO_PIN_1 por el puerto y pin que configures en CubeMX
+    if(value) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+    }
+}
+
+// 3. Función donde caen los comandos limpios (tu Payload)
+void ESP01_RecibirPayload(uint8_t value) {
+    // Acá van a llegar los datos del joystick o de la PC por UDP.
+    // Por ahora lo mandamos a la consola USB para espiarlo:
+    //char debug_msg[16];
+    //sprintf(debug_msg, "RX: %c\r\n", value);
+    //USBRXX((uint8_t*)debug_msg, strlen(debug_msg));
+
+    char debug_msg[16];
+    sprintf(debug_msg, "RX: %c\r\n", value);
+
+    // Redirigimos la salida a la UART1 (Conversor TTL)
+    // Le ponemos un timeout de 10ms para no trabar el robot
+    HAL_UART_Transmit(&huart1, (uint8_t*)debug_msg, strlen(debug_msg), 10);
+}
+
+// 4. Interrupción de Recepción USART (Se llama sola cuando llega un byte)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if(huart->Instance == USART3) {
+        // Sniffer ultra rápido de IP
+        static uint8_t idx = 0, capturando = 0, match_idx = 0;
+        static const char match[] = "STAIP,\"";
+
+        if (!capturando) {
+            if (rx_byte == match[match_idx]) {
+                match_idx++;
+                if (match[match_idx] == '\0') { capturando = 1; idx = 0; match_idx = 0; }
+            } else match_idx = (rx_byte == match[0]) ? 1 : 0;
+        } else {
+            if (rx_byte == '"' || idx >= 15) { wifi_ip[idx] = '\0'; capturando = 0; idx = 0; }
+            else wifi_ip[idx++] = rx_byte;
+        }
+
+        ESP01_WriteRX(rx_byte);
+        HAL_UART_Receive_IT(&huart3, &rx_byte, 1);
+    }
+}
+
+
+void Test_TCRT5000(void) {
+    OLED_Clear();
+    OLED_DrawString(0, 0, "CALIBRACION DMA", 1);
+    OLED_Update();
+    HAL_Delay(1000);
+
+    // Arrancamos el ADC conectado al motor DMA (modo circular)
+    // El hardware se encarga de mantener adc_buffer SIEMPRE actualizado
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 2);
+
+    while(1) {
+        OLED_Clear();
+        OLED_DrawString(0, 0, "Sensores TCRT5000", 1);
+
+        // Sensor 1 (PA0)
+        OLED_DrawString(0, 20, "S1:", 1);
+        OLED_DrawInt(25, 20, adc_buffer[0], 1);
+        uint8_t barra1 = (adc_buffer[0] * 128) / 4095;
+        OLED_FillRect(0, 32, barra1, 5, 1);
+
+        // Sensor 2 (PA1)
+        OLED_DrawString(0, 42, "S2:", 1);
+        OLED_DrawInt(25, 42, adc_buffer[1], 1);
+        uint8_t barra2 = (adc_buffer[1] * 128) / 4095;
+        OLED_FillRect(0, 54, barra2, 5, 1);
+
+        OLED_Update();
+
+        HAL_Delay(50); // Refresco visual rápido
+    }
+}
+
+void USBRXX(uint8_t *Buf, uint32_t Len){
+
+    BufUSBRx[0] = 'U';
+    BufUSBRx[1] = 'S';
+    BufUSBRx[2] = 'B';
+    BufUSBRx[3] = ' ';
+
+    for(uint32_t i=0; i<Len; i++){
+        BufUSBRx[i+4] = Buf[i];
+    }
+
+    nByteTx   = Len + 4;
+    flagUSBRx = 1;         // avisa al while(1) que hay dato
 }
 /* USER CODE END 4 */
 

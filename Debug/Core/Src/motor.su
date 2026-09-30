@@ -1,0 +1,5 @@
+../Core/Src/motor.c:89:6:Motor_Init	16	static
+../Core/Src/motor.c:116:6:Motor_SetSpeed	16	static
+../Core/Src/motor.c:124:6:Motor_Stop	0	static
+../Core/Src/motor.c:129:6:Motor_BrakeAll	16	static
+../Core/Src/motor.c:143:9:Motor_GetSpeed	0	static
